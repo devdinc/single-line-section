@@ -1,0 +1,94 @@
+import:
+    ch.njol.skript.lang.parser.ParserInstance
+    ch.njol.skript.lang.ExpressionList
+    ch.njol.skript.lang.Variable
+    ch.njol.skript.lang.Trigger
+    ch.njol.skript.lang.SectionSkriptEvent
+    ch.njol.skript.ScriptLoader
+    ch.njol.skript.config.Config
+    java.io.ByteArrayInputStream
+    java.util.ArrayList
+    com.btk5h.skriptmirror.skript.reflect.sections.SectionEvent
+    com.btk5h.skriptmirror.skript.reflect.sections.Section
+    com.btk5h.skriptmirror.util.SkriptReflection
+    java.lang.String
+    java.lang.Object
+
+# args given as a raw expression: {_a} or {_a}, {_b}
+local function argsFromExpr(expr: object) :: objects:
+    if {_expr} is instance of ExpressionList:
+        loop ...{_expr}.getExpressions():
+            add loop-value to {_out::*}
+    else if {_expr} is instance of Variable:
+        add {_expr} to {_out::*}
+    return {_out::*}
+
+# args given as strings: "{_a}", "{_b}"
+local function argsFromNames(names: objects) :: objects:
+    set {_types} to [Object.class]
+    loop {_names::*}:
+        set {_name} to loop-value
+        replace "{" and "}" with "" in {_name}
+        set {_var} to Variable.newInstance({_name}, {_types})
+        if {_var} is set:
+            add {_var} to {_out::*}
+    return {_out::*}
+
+# compiles code into a Trigger using SectionEvent as the parse context
+# (function locals are isolated, so no scoping needed here)
+local function compileLine(code: string, event: object, script: script) :: object:
+    set {_bais} to new ByteArrayInputStream({_code}.getBytes("UTF-8"))
+    set {_config} to new Config({_bais}, "compiled line section: %{_code}%", true, false, ":")
+    set {_node} to {_config}.getMainNode()
+
+    set {_parser} to ParserInstance.get()
+    set {_wasActive} to {_parser}.[ParserInstance]isActive
+    set {_parser}.[ParserInstance]isActive to true
+    set {_backup} to {_parser}.backup()
+    {_parser}.setCurrentScript({_script})
+    {_parser}.setCurrentEvent("section", SectionEvent.class)
+    {_parser}.setCurrentStructure({_event})
+
+    set {_items} to ScriptLoader.loadItems({_node})
+
+    {_parser}.restoreBackup({_backup})
+    set {_parser}.[ParserInstance]isActive to {_wasActive}
+    return new Trigger({_script}, "section", {_event}, {_items})
+
+expression [new] [single] line section %strings%[ with [arg[ument]s [variables]] %-objects%][ in %-script%]:
+    return type: section
+    parse:
+        # parse runs at load time: no event, and scoped-variables' functions may not be loaded yet,
+        # so do NOT use `scoped` here. plain prefixed local only.
+        if expr-3 is not set:
+            set {_linesection::script} to ParserInstance.get().getCurrentScript()
+        continue
+    get:
+        # snapshot the caller's locals BEFORE creating any temporaries,
+        # so none of them leak into the section.
+        # (right side is evaluated before the variable is set, so the snapshot can't contain itself)
+        set scoped {_locals} to SkriptReflection.copyLocals(SkriptReflection.getLocals(event))
+
+        set scoped {_script} to {_linesection::script}
+        if scoped {_script} is not set:
+            set scoped {_script} to expr-3
+
+        set scoped {_code} to join expr-1 with nl
+        if scoped {_code} is not set:
+            return {_none}
+
+        if expr-2 is instance of String:
+            set scoped {_args::*} to argsFromNames(expr-2)
+        else:
+            set scoped {_args::*} to argsFromExpr(raw expression of expr-2)
+
+        set scoped {_event} to new SectionSkriptEvent("section", null)
+        set scoped {_trigger} to compileLine(scoped {_code}, scoped {_event}, scoped {_script})
+        if scoped {_trigger} is not set:
+            return {_none}
+
+        set scoped {_argList} to new ArrayList()
+        loop scoped {_args::*}:
+            (scoped {_argList}).add(loop-value)
+
+        return new Section(scoped {_trigger}, scoped {_locals}, scoped {_argList})
